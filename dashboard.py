@@ -6,7 +6,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from report import SIZE_BANDS, SIZE_LABELS
+from report import BEDROOM_LABELS, SIZE_BANDS, SIZE_LABELS, apartments_by_bedrooms, bedroom_band
 from scrape import CSV_PATH, XLSX_PATH, run
 
 st.set_page_config(page_title="Adma Real Estate", page_icon="🏡", layout="wide")
@@ -51,7 +51,7 @@ with st.sidebar:
     st.caption(f"Last scraped: {df.scraped_at.iloc[0]} · {len(df)} Adma listings")
     st.header("Filters")
     listing_type = st.radio("Listing", ["Sale", "Rent"], horizontal=True)
-    categories = st.multiselect("Category", list(CATEGORY_SCALE.domain), default=["Land", "Villa"])
+    categories = st.multiselect("Category", list(CATEGORY_SCALE.domain), default=["Land", "Villa", "Apartment"])
     sources = st.multiselect("Agency", ["Confidence", "JSK"], default=["Confidence", "JSK"])
     base = df[(df.listing_type == listing_type) & df.category.isin(categories) & df.source.isin(sources)]
 
@@ -74,7 +74,7 @@ view = base
 
 # ---------------------------------------------------------------- header + KPIs
 
-st.title("Adma real estate — land & villas")
+st.title("Adma real estate — land, villas & apartments")
 st.caption("Listings scraped from confidencerealestate.com and jskre.com, located in Adma (Keserwan, Lebanon). "
            "Prices are asking prices in USD.")
 
@@ -98,8 +98,8 @@ tooltip = [
     alt.Tooltip("price_per_m2:Q", title="USD/m²", format=USD),
 ]
 
-tab_overview, tab_land, tab_villa, tab_compare, tab_table = st.tabs(
-    ["📊 Overview", "🌄 Land", "🏡 Villas", "🔁 Agencies compared", "📋 All listings"])
+tab_overview, tab_land, tab_villa, tab_apt, tab_compare, tab_table = st.tabs(
+    ["📊 Overview", "🌄 Land", "🏡 Villas", "🏢 Apartments", "🔁 Agencies compared", "📋 All listings"])
 
 # ---------------------------------------------------------------- overview
 
@@ -230,6 +230,69 @@ with tab_villa:
                 if isinstance(rec.description, str):
                     with info.expander("Description"):
                         st.text(rec.description)
+
+# ---------------------------------------------------------------- apartments
+
+with tab_apt:
+    apts = view[view.category == "Apartment"]
+    if apts.empty:
+        st.info("Add **Apartment** to the Category filter to see this tab.")
+    else:
+        apts = apts.assign(bedroom_band=apts.bedrooms.map(bedroom_band))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Median price by bedrooms")
+            st.caption("Per agency. Hover a bar for the number of listings behind it.")
+            by_beds = apts[apts.bedroom_band != "Not listed"].groupby(["bedroom_band", "source"]).agg(
+                median_price=("price_usd", "median"), listings=("ref", "count")).reset_index()
+            st.altair_chart(
+                alt.Chart(by_beds).mark_bar(cornerRadiusEnd=4).encode(
+                    x=alt.X("bedroom_band:N", sort=BEDROOM_LABELS, title="Bedrooms", axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("median_price:Q", title="Median price (USD)", axis=alt.Axis(format="$,.2s")),
+                    xOffset="source:N",
+                    color=alt.Color("source:N", scale=SOURCE_SCALE, title="Agency", legend=alt.Legend(orient="top")),
+                    tooltip=[alt.Tooltip("bedroom_band:N", title="Bedrooms"), alt.Tooltip("source:N", title="Agency"),
+                             alt.Tooltip("median_price:Q", title="Median price", format=USD),
+                             alt.Tooltip("listings:Q", title="Listings")],
+                ).properties(height=360),
+                width="stretch")
+        with c2:
+            st.subheader("Size vs asking price")
+            st.caption("Hover a dot for details; click to open the listing.")
+            st.altair_chart(
+                alt.Chart(apts.dropna(subset=["area_m2", "price_usd"])).mark_circle(size=80, opacity=0.85, stroke="white", strokeWidth=1).encode(
+                    x=alt.X("area_m2:Q", title="Area (m²)", scale=alt.Scale(zero=False), axis=alt.Axis(format=",.0f")),
+                    y=alt.Y("price_usd:Q", title="Asking price (USD)", scale=alt.Scale(zero=False), axis=alt.Axis(format="$,.2s")),
+                    color=alt.Color("source:N", scale=SOURCE_SCALE, title="Agency", legend=alt.Legend(orient="top")),
+                    href="url:N",
+                    tooltip=tooltip + [alt.Tooltip("bedrooms:Q", title="Bedrooms")],
+                ).properties(height=360).interactive(),
+                width="stretch")
+
+        st.subheader("By bedrooms")
+        st.dataframe(apartments_by_bedrooms(view, listing_type), hide_index=True, width="stretch", column_config={
+            "Median price": st.column_config.NumberColumn(format="dollar", step=1),
+            "Median area (m²)": st.column_config.NumberColumn(format="%,d"),
+            "Median USD/m²": st.column_config.NumberColumn(format="dollar", step=1),
+        })
+
+        if listing_type == "Sale":
+            st.subheader("Best value: lowest price per m²")
+            st.caption("Very low values are usually listing typos (e.g. a rent price posted as a sale) — check the link.")
+            pick = apts.dropna(subset=["price_per_m2"]).nsmallest(10, "price_per_m2")
+        else:
+            st.subheader("Cheapest rentals")
+            st.caption("Rent prices are as listed — check 'Price as listed' for monthly vs yearly.")
+            pick = apts.dropna(subset=["price_usd"]).nsmallest(10, "price_usd")
+        st.dataframe(pick[["source", "ref", "title", "bedrooms", "area_m2", "price_usd", "price_label", "price_per_m2", "url"]],
+                     hide_index=True, width="stretch", column_config={
+            "source": "Agency", "ref": "Ref", "title": "Title", "price_label": "Price as listed",
+            "bedrooms": st.column_config.NumberColumn("Beds", format="%d"),
+            "area_m2": st.column_config.NumberColumn("Area m²", format="%,d"),
+            "price_usd": st.column_config.NumberColumn("Price", format="dollar", step=1),
+            "price_per_m2": st.column_config.NumberColumn("USD/m²", format="dollar", step=1),
+            "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+        })
 
 # ---------------------------------------------------------------- agencies compared
 

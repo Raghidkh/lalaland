@@ -90,6 +90,35 @@ def land_by_source(df):
     return pd.DataFrame(rows)
 
 
+BEDROOM_LABELS = ["Studio / 1", "2", "3", "4", "5+", "Not listed"]
+
+
+def bedroom_band(beds):
+    if pd.isna(beds):
+        return "Not listed"
+    if beds <= 1:
+        return "Studio / 1"
+    return "5+" if beds >= 5 else str(int(beds))
+
+
+def apartments_by_bedrooms(df, listing_type="Sale"):
+    apts = df[(df.category == "Apartment") & (df.listing_type == listing_type)]
+    apts = apts.assign(band=apts.bedrooms.map(bedroom_band))
+    rows = []
+    for band in BEDROOM_LABELS:
+        d = apts[apts.band == band]
+        if d.empty:
+            continue
+        rows.append({
+            "Bedrooms": band,
+            "Listings": len(d),
+            "Median price": _median(d.price_usd),
+            "Median area (m²)": _median(d.area_m2),
+            "Median USD/m²": _median(d.price_per_m2),
+        })
+    return pd.DataFrame(rows)
+
+
 def land_by_size(df):
     land = df[(df.category == "Land") & (df.listing_type == "Sale")].copy()
     land["band"] = pd.cut(land.area_m2, SIZE_BANDS, labels=SIZE_LABELS, right=False)
@@ -199,8 +228,10 @@ def build_workbook(df: pd.DataFrame, path: str):
     sale = df[df.listing_type == "Sale"]
     land = sale[sale.category == "Land"]
     villas = sale[sale.category == "Villa"]
+    apts = sale[sale.category == "Apartment"]
+    apts_rent = df[(df.listing_type == "Rent") & (df.category == "Apartment")]
 
-    ws["A1"] = "Adma Real Estate — Land & Villas Market Snapshot"
+    ws["A1"] = "Adma Real Estate — Land, Villas & Apartments Market Snapshot"
     ws["A1"].font = Font(size=18, bold=True, color=INK)
     ws["A2"] = (f"Scraped {datetime.now():%d %b %Y %H:%M} from confidencerealestate.com and jskre.com · "
                 f"{len(df)} listings in Adma (Keserwan) · prices in USD")
@@ -214,13 +245,23 @@ def build_workbook(df: pd.DataFrame, path: str):
         ("Villas/houses for sale", len(villas), "#,##0"),
         ("Median villa price", _median(villas.price_usd), '"$"#,##0'),
     ]
+    apt_kpis = [
+        ("Apartments for sale", len(apts), "#,##0"),
+        ("Median apartment price", _median(apts.price_usd), '"$"#,##0'),
+        ("Median apartment USD/m²", _median(apts.price_per_m2), '"$"#,##0'),
+        ("Median apartment size", _median(apts.area_m2), '#,##0" m²"'),
+        ("Median bedrooms", _median(apts.bedrooms), "0"),
+        ("Apartments for rent", len(apts_rent), "#,##0"),
+    ]
     for k, (label, value, fmt) in enumerate(kpis):
         _kpi(ws, 4, 1 + 2 * k, label, value, fmt)
+    for k, (label, value, fmt) in enumerate(apt_kpis):
+        _kpi(ws, 7, 1 + 2 * k, label, value, fmt)
 
     money = '"$"#,##0'
     cat = summary_by_category(df)
     cat_first, cat_last = _write_table(
-        ws, 8, 1, cat,
+        ws, 11, 1, cat,
         {c: money for c in ["Median price", "Average price", "Min price", "Max price", "Median USD/m²"]}
         | {"Median area (m²)": "#,##0"},
         title="For-sale listings by category")
@@ -239,6 +280,12 @@ def build_workbook(df: pd.DataFrame, path: str):
         ws, size_top, 1, size, {"Median price": money, "Median USD/m²": money},
         title="Land for sale — by plot size")
 
+    beds = apartments_by_bedrooms(df)
+    beds_first, beds_last = _write_table(
+        ws, size_last + 3, 1, beds,
+        {"Median price": money, "Median USD/m²": money, "Median area (m²)": "#,##0"},
+        title="Apartments for sale — by bedrooms")
+
     # Chart 1: for-sale listings per category, one series per agency.
     ch = BarChart()
     ch.type, ch.grouping, ch.overlap = "col", "clustered", -10
@@ -251,7 +298,7 @@ def build_workbook(df: pd.DataFrame, path: str):
     ch.y_axis.majorGridlines.spPr = None
     ch.x_axis.delete = ch.y_axis.delete = False
     ch.height, ch.width = 7.5, 15
-    ws.add_chart(ch, f"L{8}")
+    ws.add_chart(ch, "L11")
 
     # Chart 2: median land USD/m² by plot size.
     ch2 = BarChart()
@@ -264,7 +311,22 @@ def build_workbook(df: pd.DataFrame, path: str):
     ch2.x_axis.delete = ch2.y_axis.delete = False
     ch2.y_axis.number_format = '"$"#,##0'
     ch2.height, ch2.width = 7.5, 15
-    ws.add_chart(ch2, f"L{24}")
+    ws.add_chart(ch2, "L27")
+
+    # Chart 2b: apartments, median price by bedrooms.
+    ch4 = BarChart()
+    ch4.type, ch4.title = "col", "Apartments for sale: median price by bedrooms"
+    # "Not listed" mixes unknown layouts (often whole floors) and would dwarf the other bars - table only.
+    chart_last = beds_last - 1 if ws.cell(beds_last, 1).value == "Not listed" else beds_last
+    s = Series(Reference(ws, min_col=3, min_row=beds_first, max_row=chart_last), title="Median price")
+    _style_series(s, "1BAF7A")
+    ch4.series.append(s)
+    ch4.set_categories(Reference(ws, min_col=1, min_row=beds_first, max_row=chart_last))
+    ch4.legend = None
+    ch4.x_axis.delete = ch4.y_axis.delete = False
+    ch4.y_axis.number_format = '"$"#,##0'
+    ch4.height, ch4.width = 7.5, 15
+    ws.add_chart(ch4, "L63")
 
     # Chart 3: land area vs price scatter (log axes - plots range from ~1,000 to 14,500 m²).
     land_sorted = df[df.category == "Land"].sort_values(["listing_type", "price_per_m2"], ascending=[False, True])
@@ -298,9 +360,10 @@ def build_workbook(df: pd.DataFrame, path: str):
             _style_series(ser, SOURCE_COLORS[source], marker=True)
             ch3.series.append(ser)
     ch3.height, ch3.width = 9, 15
-    ws.add_chart(ch3, f"L{40}")
+    ws.add_chart(ch3, "L43")
 
     _write_data_sheet(wb, "Villas", df[df.category == "Villa"].sort_values(["listing_type", "price_usd"], ascending=[False, True]))
+    _write_data_sheet(wb, "Apartments", df[df.category == "Apartment"].sort_values(["listing_type", "price_per_m2"], ascending=[False, True]))
     _write_data_sheet(wb, "All Adma Listings", df.sort_values(["category", "listing_type", "price_usd"]))
 
     wb.move_sheet("_chart_data", offset=len(wb.sheetnames))
