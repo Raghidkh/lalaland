@@ -65,7 +65,15 @@ with st.sidebar:
         alo, ahi = st.slider("Area (m²)", float(areas.min()), float(areas.max()),
                              (float(areas.min()), float(areas.max())), step=10.0, format="%,d m²")
         base = base[base.area_m2.isna() | base.area_m2.between(alo, ahi)]
-    text = st.text_input("Search title / description", placeholder="e.g. sea view, pool")
+    ppm = base.price_per_m2.dropna()
+    if listing_type == "Sale" and len(ppm) > 1 and ppm.min() < ppm.max():
+        full = (float(ppm.min()), float(ppm.max()))
+        plo, phi = st.slider("Price per m² (USD)", *full, full, step=10.0, format="$%,d",
+                             help="Listings without a price or area have no price per m²; "
+                                  "they are hidden once you narrow this range.")
+        if (plo, phi) != full:
+            base = base[base.price_per_m2.between(plo, phi)]
+    text =st.text_input("Search title / description", placeholder="e.g. sea view, pool")
     if text:
         mask = (base.title.fillna("") + " " + base.description.fillna("")).str.contains(text, case=False, regex=False)
         base = base[mask]
