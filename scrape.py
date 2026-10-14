@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import hidden
 import history
 from report import build_workbook
 from scrapers import confidence, jsk, olx
@@ -81,12 +82,14 @@ def seed_history_from_last_csv(log=print):
 
 
 def save_excel(df: pd.DataFrame, log=print):
+    hidden_rows = hidden.load()  # listings hidden with ✕ in the dashboard stay out of the report
+    df = df[~df.listing_id.isin(hidden_rows.listing_id)] if "listing_id" in df else df
     try:
-        build_workbook(df, XLSX_PATH)
+        build_workbook(df, XLSX_PATH, hidden_rows)
         log(f"Excel saved: {XLSX_PATH}")
     except PermissionError:
         alt = XLSX_PATH.with_name(f"Adma_Real_Estate_{datetime.now():%Y%m%d_%H%M}.xlsx")
-        build_workbook(df, alt)
+        build_workbook(df, alt, hidden_rows)
         log(f"{XLSX_PATH.name} is open in Excel - saved to {alt.name} instead")
 
 

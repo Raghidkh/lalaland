@@ -22,6 +22,7 @@ SIZE_LABELS = ["< 1,000 m²", "1,000–1,500 m²", "1,500–2,500 m²", "2,500�
 # (column, header, width, number format)
 DATA_COLUMNS = [
     ("change", "Change", 14, None),
+    ("hidden_at", "Hidden on", 16, None),
     ("online_status", "Online?", 10, None),
     ("source", "Source", 11, None),
     ("ref", "Ref", 11, None),
@@ -250,7 +251,7 @@ def _style_series(series, color, marker=False):
 
 # ---------------------------------------------------------------- main entry
 
-def build_workbook(df: pd.DataFrame, path: str):
+def build_workbook(df: pd.DataFrame, path: str, hidden_rows: pd.DataFrame | None = None):
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard"
@@ -399,6 +400,8 @@ def build_workbook(df: pd.DataFrame, path: str):
     _write_data_sheet(wb, "Apartments", df[df.category == "Apartment"].sort_values(["listing_type", "price_per_m2"], ascending=[False, True]))
     _write_data_sheet(wb, "All Adma Listings", df.sort_values(["category", "listing_type", "price_usd"]))
     _write_history_sheets(wb)
+    if hidden_rows is not None and len(hidden_rows):
+        _write_data_sheet(wb, "Hidden", hidden_rows.sort_values("hidden_at", ascending=False))
 
     wb.move_sheet("_chart_data", offset=len(wb.sheetnames))
     wb.save(path)

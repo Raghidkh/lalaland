@@ -108,7 +108,7 @@ def _to_row(ad):
         "agent": agency or seller or fields.get("Seller Type"),
         "publish_date": datetime.fromtimestamp(created, timezone.utc).strftime("%Y-%m-%d") if created else None,
         "description": ad.get("description"),
-        "image_url": f"https://images-prod.olx-dubizzle.com/thumbnails/{cover}-400x300.jpeg" if cover else None,
+        "image_url": f"https://images-prod.olx-dubizzle.com/thumbnails/{cover}-400x300.webp" if cover else None,
         "url": f"https://www.olx.com.lb/ad/{quote(ad.get('slug') or 'ad')}-ID{ad['externalID']}.html",
     })
 

@@ -30,6 +30,20 @@ Manual commands:
 .venv\Scripts\streamlit run dashboard.py    # dashboard (also has a Re-scrape button)
 ```
 
+## The dashboard
+
+- **🏠 Browse listings** — property cards like a real-estate portal: photo, price, USD/m², beds/baths/size,
+  badges (For sale/rent, **NEW**, **PRICE ↓**), source and agent. Click a card to open the original listing.
+  Sort by newest, price, price per m² or size; 24 per page.
+- **Filters (sidebar)** — Buy/Rent, property type, source, price, size, price per m², bedrooms,
+  keywords to include/exclude (searched in every field: title, description, source, ref, agent, phone…), and *Reset all filters*.
+- **✕ Hide a listing** — the ✕ on a card (or the ✕ column in *Data table*) hides a listing you're not
+  interested in. It disappears from every tab, total and the Excel report, and shows up in the **🙈 Hidden**
+  tab, where you can restore it. Saved in `output/hidden_listings.csv`, so it stays hidden after re-scrapes.
+- **Market overview, Land, Apartments** — charts and stats; **Changes & history**; **Sites compared**;
+  **Data table** with CSV/Excel downloads.
+- The look (colours, fonts) is set in `.streamlit/config.toml`.
+
 ## What's in the Excel
 
 | Sheet | Content |
