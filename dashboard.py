@@ -75,10 +75,23 @@ with st.sidebar:
                                   "they are hidden once you narrow this range.")
         if (plo, phi) != full:
             base = base[base.price_per_m2.between(plo, phi)]
-    text =st.text_input("Search title / description", placeholder="e.g. sea view, pool")
-    if text:
-        mask = (base.title.fillna("") + " " + base.description.fillna("")).str.contains(text, case=False, regex=False)
-        base = base[mask]
+    st.subheader("Keywords")
+    st.caption("Type a word or phrase and press Enter — add as many as you like. "
+               "Searches title, description, type and location; not case-sensitive.")
+    include = st.multiselect("✅ Must contain", [], accept_new_options=True, placeholder="e.g. sea view, pool")
+    match_all = st.radio("Must contain…", ["All of the words", "Any of the words"], horizontal=True,
+                         disabled=len(include) < 2) == "All of the words"
+    exclude = st.multiselect("🚫 Must NOT contain", [], accept_new_options=True,
+                             placeholder="e.g. under construction")
+    if include or exclude:
+        text = (base.title.fillna("") + " " + base.description.fillna("") + " "
+                + base.property_type.fillna("") + " " + base.location.fillna("")).str.lower()
+        has = {word: text.str.contains(word.strip().lower(), regex=False) for word in include + exclude}
+        if include:
+            hits = pd.concat([has[w] for w in include], axis=1)
+            base = base[hits.all(axis=1) if match_all else hits.any(axis=1)]
+        for word in exclude:
+            base = base[~has[word].loc[base.index]]
 
 view = base
 
