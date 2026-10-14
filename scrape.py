@@ -12,6 +12,7 @@ import pandas as pd
 
 import hidden
 import history
+import research
 from report import build_workbook
 from scrapers import confidence, jsk, olx
 from scrapers.common import COLUMNS
@@ -83,7 +84,8 @@ def seed_history_from_last_csv(log=print):
 
 def save_excel(df: pd.DataFrame, log=print):
     hidden_rows = hidden.load()  # listings hidden with ✕ in the dashboard stay out of the report
-    df = df[~df.listing_id.isin(hidden_rows.listing_id)] if "listing_id" in df else df
+    df = research.enrich(history.add_listing_ids(df))  # duplicates, fair price, rent & yield
+    df = df[~df.listing_id.isin(hidden_rows.listing_id)]
     try:
         build_workbook(df, XLSX_PATH, hidden_rows)
         log(f"Excel saved: {XLSX_PATH}")

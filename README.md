@@ -44,6 +44,20 @@ Manual commands:
   **Data table** with CSV/Excel downloads.
 - The look (colours, fonts) is set in `.streamlit/config.toml`.
 
+## Research features (`research.py`)
+
+- **Duplicates merged** — the same property posted several times (OLX reposts, several agencies, several
+  sites) is grouped into one *property*: same type and size, plus a matching price and agent/title (plots and
+  villas with an unusual size like 1,183 m² match even when agencies ask different prices). Sidebar toggle
+  *Count each property once*; cards show "Listed 3× (JSK, OLX) · $1.2M–$1.75M".
+- **Fair price / 💎 Deals** — every listing for sale is compared with the 15 most similar listings (type, size,
+  bedrooms, sea view, terrace, garden, duplex, furnished, new build, gated/pool). Estimated value = their median
+  price per m² × size → "18% below market". Bands: ±10% fair, 10–25% good/above, >25% great/high;
+  >50% below = *Check details* (usually a data issue). The Deals tab shows the comparables behind each estimate.
+- **💰 Investment** — rents normalised to per month; each apartment for sale gets an estimated rent from the 10
+  most similar rentals → gross yield. Yield by bedrooms, a yield calculator (with costs/vacancy), top yields.
+- All of this is based on **asking** prices — research signals, not valuations.
+
 ## What's in the Excel
 
 | Sheet | Content |
@@ -55,6 +69,8 @@ Manual commands:
 | **All Adma Listings** | Everything in Adma, incl. commercial, for context |
 | **Changes** | What changed since the previous scrape: new, removed, price drops/increases |
 | **History** | Every listing ever seen: first/last seen, still online?, first vs latest price |
+| **Deals** | Each property vs similar listings: estimated value, % vs market, confidence |
+| **Investment** | Rents and gross yield by bedrooms + highest estimated yields |
 
 ## History (new / removed / price changes)
 

@@ -12,6 +12,7 @@ import streamlit as st
 
 import hidden
 import history
+import research
 from report import BEDROOM_LABELS, SIZE_BANDS, SIZE_LABELS, apartments_by_bedrooms, bedroom_band
 from scrape import CSV_PATH, XLSX_PATH, run
 
@@ -30,7 +31,10 @@ SORTS = {
     "Price: high to low": ("price_usd", False),
     "Price per m²: low to high": ("price_per_m2", True),
     "Size: largest first": ("area_m2", False),
+    "Best deal first": ("value_gap_pct", True),
+    "Highest rental yield": ("gross_yield", False),
 }
+DEAL_ORDER = ["Great deal", "Good price", "Fair price", "Above market", "High price", "Check details"]
 
 CSS = """
 <style>
@@ -68,6 +72,11 @@ a.card:hover {box-shadow: 0 10px 28px rgba(0,0,0,.10); transform: translateY(-2p
        background: rgba(255,255,255,.95); color: #1b1b1a; text-transform: uppercase;}
 .b.new {background: #0f6e63; color: #fff;}
 .b.drop {background: #b9471c; color: #fff;}
+.prow {display: flex; align-items: center; justify-content: space-between; gap: 8px;}
+.deal {font-size: .7rem; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap;}
+.deal.good {background: #e3f4ef; color: #0b5c52;} .deal.fair {background: #f0efeb; color: #52514e;}
+.deal.high {background: #fbeee6; color: #9a3d15;} .deal.check {background: #fff4d6; color: #7a5600;}
+.dup {font-size: .74rem; color: #0f6e63; background: #eef7f5; border-radius: 6px; padding: 3px 7px;}
 .src {position: absolute; bottom: 10px; left: 10px; z-index: 2; font-size: .72rem; font-weight: 650; color: #fff;
        background: rgba(20,20,20,.62); padding: 3px 9px 3px 7px; border-radius: 999px; display: flex;
        align-items: center; gap: 6px;}
@@ -107,6 +116,10 @@ ICONS = {
     "area": '<svg class="i" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
     "pin": '<svg class="i" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.4"/></svg>',
 }
+COLUMNS_SEARCHED = ["listing_id", "source", "ref", "title", "listing_type", "category", "property_type",
+                    "price_usd", "price_label", "area_m2", "price_per_m2", "bedrooms", "bathrooms", "parking",
+                    "location", "status", "furnished", "payment_type", "agent", "agent_phone", "publish_date",
+                    "views", "description", "url", "also_listed_on", "deal_label", "group_sources"]
 RENT_PERIODS = {"monthly": "month", "month": "month", "yearly": "year", "year": "year", "daily": "day", "weekly": "week"}
 
 
@@ -117,8 +130,9 @@ def load(mtime: float) -> pd.DataFrame:  # mtime busts the cache after a re-scra
     # OLX only serves newer thumbnails as .webp (older scrapes saved .jpeg links)
     is_olx = df["image_url"].str.contains("olx-dubizzle.com/thumbnails/", na=False, regex=False)
     df.loc[is_olx, "image_url"] = df.loc[is_olx, "image_url"].str.replace("-400x300.jpeg", "-400x300.webp", regex=False)
+    df = research.enrich(df)  # duplicates, fair price, rent & yield estimates
     # One lower-case text per listing with every field (source, ref, agent, price, description, …) for keywords
-    searchable = df.drop(columns=["image_url", "scraped_at"], errors="ignore")
+    searchable = df[[c for c in df.columns if c in COLUMNS_SEARCHED]]
     as_text = searchable.apply(lambda col: col.map(lambda v: "" if pd.isna(v) else str(v)))
     df["_search"] = as_text.agg(" ".join, axis=1).str.lower()
     return df
@@ -148,6 +162,17 @@ def card(r, badges: dict) -> str:
             period = r.price_label.split("/", 1)[1].strip().lower()
             suffix = f"<small>/ {RENT_PERIODS.get(period, period)}</small>" if period and period != "any" else ""
         price = f'<div class="price">&#36;{r.price_usd:,.0f}{suffix}</div>'
+    if isinstance(r.deal_label, str):
+        gap = r.value_gap_pct
+        if r.deal_label in ("Great deal", "Good price"):
+            pill = f'<span class="deal good">{abs(gap):.0f}% below market</span>'
+        elif r.deal_label in ("Above market", "High price"):
+            pill = f'<span class="deal high">{gap:.0f}% above market</span>'
+        elif r.deal_label == "Fair price":
+            pill = '<span class="deal fair">Fair price</span>'
+        else:
+            pill = '<span class="deal check">Check details</span>'
+        price = f'<div class="prow">{price}{pill}</div>'
     ppm = f'<div class="ppm">&#36;{r.price_per_m2:,.0f} / m²</div>' if pd.notna(r.price_per_m2) else '<div class="ppm">&nbsp;</div>'
 
     tags = [f'<span class="b">{"For rent" if r.listing_type == "Rent" else "For sale"}</span>',
@@ -174,12 +199,19 @@ def card(r, badges: dict) -> str:
 
     img = f'<img src="{esc(r.image_url)}" alt="" loading="lazy">' if isinstance(r.image_url, str) else ""
     location = str(r.location).split(",")[0] if isinstance(r.location, str) else "Adma"
+    dup = ""
+    if r.listings_in_group > 1:
+        spread = ""
+        if pd.notna(r.group_min_price) and r.group_max_price > r.group_min_price:
+            spread = f" · &#36;{r.group_min_price:,.0f}–&#36;{r.group_max_price:,.0f}"
+        dup = f'<div class="dup">🔁 Listed {r.listings_in_group:.0f}× ({esc(r.group_sources)}){spread}</div>'
     return (
         f'<a class="card" href="{esc(r.url)}" target="_blank" rel="noopener">'
         f'<div class="ph"><div class="noimg">No photo</div>{img}<div class="badges">{"".join(tags)}</div>'
         f'<div class="src"><i style="background:{SOURCE_COLORS.get(r.source, "#999")}"></i>{esc(r.source)}</div></div>'
         f'<div class="cbody">{price}{ppm}<div class="ttl">{esc(r.title)}</div>'
         f'<div class="loc">{ICONS["pin"]}{esc(location)}, Keserwan</div>'
+        f'{dup}'
         f'<div class="facts">{"".join(facts) or "<span>&nbsp;</span>"}</div>'
         f'<div class="foot"><span>{esc(r.agent) if isinstance(r.agent, str) else ""}</span><span>{listed}</span></div>'
         f'</div></a>'
@@ -219,7 +251,13 @@ with st.sidebar:
     categories = st.pills("Property type", CATEGORIES, selection_mode="multi",
                           default=["Land", "Villa", "Apartment"], key="f_cats")
     sources = st.pills("Source", SOURCES, selection_mode="multi", default=SOURCES, key="f_srcs")
+    merge = st.toggle("Count each property once", value=True, key="f_merge",
+                      help="The same property is often posted several times (reposts on OLX, several agencies, "
+                           "several sites). When on, each property appears once — its cheapest listing — and "
+                           "the card says where else it is listed.")
     base = df[(df.listing_type == listing_type) & df.category.isin(categories) & df.source.isin(sources)]
+    if merge:
+        base = base[base.is_primary]
 
     st.markdown('<div class="side-h">Price & size</div>', unsafe_allow_html=True)
     prices = base.price_usd.dropna()
@@ -241,6 +279,12 @@ with st.sidebar:
                                   "they are hidden once you narrow this range.")
         if (plo, phi) != full:
             base = base[base.price_per_m2.between(plo, phi)]
+    if listing_type == "Sale":
+        deal_pick = st.pills("Price vs market", DEAL_ORDER, selection_mode="multi", key="f_deal",
+                             help="Compared with the median price per m² of the 15 most similar listings "
+                                  "(see the 💎 Deals tab).")
+        if deal_pick:
+            base = base[base.deal_label.isin(deal_pick)]
     beds = st.pills("Bedrooms", ["1", "2", "3", "4", "5+"], selection_mode="multi", key="f_beds",
                     help="Only applies to listings that state a bedroom count; land is unaffected.")
     if beds:
@@ -287,7 +331,7 @@ st.markdown(
     '<h1>Property in Adma</h1>'
     '<p>Land, villas and apartments from Confidence Real Estate, JSK Real Estate and OLX — in one place.</p>'
     '<div class="chips">'
-    f'<span>📍 Adma w Dafnah</span><span>🏷️ {len(df):,} listings tracked</span>'
+    f'<span>📍 Adma w Dafnah</span><span>🏷️ {len(df):,} listings · {int(df.is_primary.sum()):,} unique properties</span>'
     f'<span>🕒 Updated {pd.to_datetime(df.scraped_at.iloc[0]):%d %b %Y}</span>'
     f'<span>🔁 {len(history.list_snapshots())} scrape(s) of history</span>'
     '</div></div>',
@@ -315,8 +359,8 @@ tooltip = [
     alt.Tooltip("price_per_m2:Q", title="USD/m²", format=USD),
 ]
 
-tab_browse, tab_overview, tab_land, tab_apt, tab_hist, tab_compare, tab_table, tab_hidden = st.tabs(
-    ["🏠 Browse listings", "📊 Market overview", "🌄 Land", "🏢 Apartments", "🕒 Changes & history",
+tab_browse, tab_deals, tab_invest, tab_overview, tab_land, tab_apt, tab_hist, tab_compare, tab_table, tab_hidden = st.tabs(
+    ["🏠 Browse listings", "💎 Deals", "💰 Investment", "📊 Market overview", "🌄 Land", "🏢 Apartments", "🕒 Changes & history",
      "🔁 Sites compared", "📋 Data table", f"🙈 Hidden ({len(hidden_ids)})"])
 
 # ---------------------------------------------------------------- browse
@@ -331,7 +375,8 @@ def key_of(listing_id) -> str:
 
 
 def hide_listing(listing_id):
-    hidden.hide(df_all[df_all.listing_id == listing_id])
+    property_id = df_all.loc[df_all.listing_id == listing_id, "property_id"].iloc[0]
+    hidden.hide(df_all[df_all.property_id == property_id])  # with all its duplicate listings
     st.toast("Listing hidden — restore it any time from the 🙈 Hidden tab", icon="🙈")
 
 
@@ -366,6 +411,186 @@ with tab_browse:
                       f'{(page - 1) * PAGE_SIZE + 1}–{(page - 1) * PAGE_SIZE + len(chunk)} of {len(ordered):,}</div>',
                       unsafe_allow_html=True)
     next_col.button("Next →", on_click=go_to, args=(page + 1,), disabled=page >= pages, width="stretch")
+
+# ---------------------------------------------------------------- deals
+
+with tab_deals:
+    if listing_type != "Sale":
+        st.info("Deals compare asking prices of properties **for sale** — switch the sidebar to **Buy**.")
+    else:
+        rated = view[view.value_gap_pct.notna()]
+        st.markdown('<div class="results-h">Is the asking price fair?</div><div class="results-sub">Each listing is '
+                    "compared with the <b>15 most similar listings</b> (same type; closest in size and bedrooms; "
+                    "same features like sea view, terrace, garden, duplex, furnished, new build, gated/pool). "
+                    "Its estimated market value = their median price per m² × its size. Duplicates of the same "
+                    "property are never used as its own comparables. Asking prices ≠ sale prices: use this as a "
+                    "research signal, not a valuation.</div>", unsafe_allow_html=True)
+        counts = rated.deal_label.value_counts()
+        k = st.columns(4)
+        k[0].metric("Great deals", int(counts.get("Great deal", 0)), help="25–50% below the estimate")
+        k[1].metric("Good prices", int(counts.get("Good price", 0)), help="10–25% below the estimate")
+        k[2].metric("Above market", int(counts.get("Above market", 0) + counts.get("High price", 0)),
+                    help="More than 10% above the estimate")
+        k[3].metric("Check details", int(counts.get("Check details", 0)),
+                    help="More than 50% below the estimate — usually a data issue (plot size counted as built "
+                         "size, rent posted as sale, typo). Worth a look, but verify first.")
+
+        st.subheader("Asking vs estimated price per m²")
+        st.caption("Each dot is a listing. Below the dashed line = cheaper than similar listings. "
+                   "Hover for details; click to open.")
+        chart_data = rated[~rated.deal_label.isin(["Check details", "Check price"])]
+        top = float(max(chart_data.price_per_m2.max(), chart_data.fair_price_m2.max())) if len(chart_data) else 1
+        line = alt.Chart(pd.DataFrame({"x": [0, top], "y": [0, top]})).mark_line(
+            strokeDash=[5, 4], color="#8a8986", strokeWidth=1.5).encode(x="x:Q", y="y:Q")
+        dots = alt.Chart(chart_data).mark_circle(size=70, opacity=0.8, stroke="white", strokeWidth=1).encode(
+            x=alt.X("fair_price_m2:Q", title="Estimated market price per m² (USD)", axis=alt.Axis(format="$,.0f")),
+            y=alt.Y("price_per_m2:Q", title="Asking price per m² (USD)", axis=alt.Axis(format="$,.0f")),
+            color=alt.Color("source:N", scale=SOURCE_SCALE, title="Source", legend=alt.Legend(orient="top")),
+            href="url:N",
+            tooltip=tooltip + [alt.Tooltip("fair_price_m2:Q", title="Est. USD/m²", format=USD),
+                               alt.Tooltip("value_gap_pct:Q", title="vs market %", format="+.0f"),
+                               alt.Tooltip("comps_n:Q", title="Comparables")],
+        )
+        st.altair_chart((line + dots).properties(height=420).interactive(), width="stretch")
+
+        st.subheader("Ranked: cheapest relative to similar listings")
+        show_checks = st.checkbox("Include listings flagged “Check details”", value=False)
+        ranked = rated if show_checks else rated[~rated.deal_label.isin(["Check details", "Check price"])]
+        ranked = ranked.sort_values("value_gap_pct")
+        st.dataframe(ranked[["deal_label", "value_gap_pct", "title", "source", "category", "area_m2", "bedrooms",
+                             "price_usd", "fair_value", "price_per_m2", "fair_price_m2", "comps_n",
+                             "fair_confidence", "listings_in_group", "url"]],
+                     hide_index=True, width="stretch", height=420, column_config={
+            "deal_label": "Verdict", "title": "Title", "source": "Source", "category": "Category",
+            "value_gap_pct": st.column_config.NumberColumn("vs market", format="%+.0f%%"),
+            "area_m2": st.column_config.NumberColumn("Area m²", format="%,d"),
+            "bedrooms": st.column_config.NumberColumn("Beds", format="%d"),
+            "price_usd": st.column_config.NumberColumn("Asking price", format="dollar", step=1),
+            "fair_value": st.column_config.NumberColumn("Est. market value", format="dollar", step=1),
+            "price_per_m2": st.column_config.NumberColumn("USD/m²", format="dollar", step=1),
+            "fair_price_m2": st.column_config.NumberColumn("Est. USD/m²", format="dollar", step=1),
+            "comps_n": st.column_config.NumberColumn("Comparables", format="%d"),
+            "fair_confidence": st.column_config.TextColumn("Confidence", help="High: ≥10 comparables that agree "
+                                                           "closely; Low: few or widely spread comparables"),
+            "listings_in_group": st.column_config.NumberColumn("Times listed", format="%d"),
+            "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+        })
+
+        st.subheader("Why this estimate? See the comparables")
+        if len(ranked):
+            pick = st.selectbox(
+                "Listing", ranked.listing_id.tolist(), key="deal_pick",
+                format_func=lambda i: (lambda r: f"{r.value_gap_pct:+.0f}% · ${r.price_usd:,.0f} · {r.area_m2:,.0f} m² · "
+                                                 f"{str(r.title)[:70]}")(ranked.set_index("listing_id").loc[i]))
+            r = ranked.set_index("listing_id").loc[pick]
+            comps = df_all[df_all.listing_id.isin(str(r.comps_ids).split("|"))]
+            st.markdown(
+                f"Asking **${r.price_usd:,.0f}** for **{r.area_m2:,.0f} m²** = **${r.price_per_m2:,.0f}/m²**. "
+                f"The {len(comps)} most similar listings ask a median **${r.fair_price_m2:,.0f}/m²** → estimated "
+                f"value **${r.fair_value:,.0f}** ({r.value_gap_pct:+.0f}%, confidence {str(r.fair_confidence).lower()}).".replace("$", "\\$"))
+            st.dataframe(comps[["source", "title", "area_m2", "bedrooms", "price_usd", "price_per_m2", "url"]]
+                         .sort_values("price_per_m2"), hide_index=True, width="stretch", column_config={
+                "source": "Source", "title": "Title",
+                "area_m2": st.column_config.NumberColumn("Area m²", format="%,d"),
+                "bedrooms": st.column_config.NumberColumn("Beds", format="%d"),
+                "price_usd": st.column_config.NumberColumn("Asking price", format="dollar", step=1),
+                "price_per_m2": st.column_config.NumberColumn("USD/m²", format="dollar", step=1),
+                "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+            })
+
+# ---------------------------------------------------------------- investment
+
+with tab_invest:
+    st.markdown('<div class="results-h">Rental yield & investment</div><div class="results-sub">Rents are '
+                "normalised to per month (yearly rents ÷ 12). Each apartment for sale gets an estimated rent from "
+                "the 10 most similar apartments for rent (rent per m² × its size). Gross yield = 12 × rent ÷ price, "
+                "before costs, vacancy and taxes. Based on all Adma apartments (sidebar filters don't apply to the "
+                "market table).</div>", unsafe_allow_html=True)
+    by_beds = research.yield_by_bedrooms(df)
+    for_sale = df[(df.category == "Apartment") & (df.listing_type == "Sale") & df.is_primary & df.gross_yield.notna()]
+    k = st.columns(4)
+    k[0].metric("Median gross yield", f"{for_sale.gross_yield.median():.1f}%" if len(for_sale) else "—",
+                help="Estimated for every apartment for sale in Adma")
+    k[1].metric("Median price-to-rent", f"{(100 / for_sale.gross_yield).median():.0f} years" if len(for_sale) else "—",
+                help="Years of gross rent needed to pay the asking price")
+    k[2].metric("Apartments for rent", f"{int((df.monthly_rent.notna() & (df.category == 'Apartment') & df.is_primary).sum())}")
+    k[3].metric("Median rent / month", money(df[(df.category == "Apartment") & df.is_primary].monthly_rent.median()))
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.subheader("By bedrooms")
+        st.dataframe(by_beds, hide_index=True, width="stretch", column_config={
+            "Median price": st.column_config.NumberColumn(format="dollar", step=1),
+            "Median rent / month": st.column_config.NumberColumn(format="dollar", step=1),
+            "Gross yield %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Price-to-rent (years)": st.column_config.NumberColumn(format="%.0f"),
+        })
+        st.caption("Rows need at least 3 listings for sale and 3 for rent.")
+    with c2:
+        if len(by_beds):
+            st.altair_chart(alt.Chart(by_beds).mark_bar(cornerRadiusEnd=4, color="#0f6e63").encode(
+                x=alt.X("Bedrooms:N", sort=None, axis=alt.Axis(labelAngle=0)),
+                y=alt.Y("Gross yield %:Q", title="Gross yield (%)"),
+                tooltip=["Bedrooms", alt.Tooltip("Gross yield %:Q", format=".1f"),
+                         alt.Tooltip("Median price:Q", format=USD), alt.Tooltip("Median rent / month:Q", format=USD)],
+            ).properties(height=260), width="stretch")
+
+    st.subheader("Yield calculator")
+    options = view[(view.category == "Apartment") & (view.listing_type == "Sale") & view.area_m2.notna()]
+    options = options.sort_values("gross_yield", ascending=False, na_position="last")
+    choice = st.selectbox("Start from a listing (optional)", [None] + options.listing_id.tolist(), key="calc_pick",
+                          format_func=lambda i: "— enter your own numbers —" if i is None else
+                          (lambda r: f"${r.price_usd:,.0f} · {r.area_m2:,.0f} m² · {str(r.title)[:70]}")(
+                              options.set_index("listing_id").loc[i]))
+    picked = options.set_index("listing_id").loc[choice] if choice else None
+    left, right = st.columns([2, 3])
+    with left:
+        price_in = st.number_input("Purchase price (USD)", min_value=10000, step=10000, key=f"calc_price_{choice}",
+                                   value=int(picked.price_usd) if picked is not None and pd.notna(picked.price_usd) else 300000)
+        area_in = st.number_input("Size (m²)", min_value=30, step=5, key=f"calc_area_{choice}",
+                                  value=int(picked.area_m2) if picked is not None else 200)
+        beds_in = st.number_input("Bedrooms", min_value=1, max_value=8, step=1, key=f"calc_beds_{choice}",
+                                  value=int(picked.bedrooms) if picked is not None and pd.notna(picked.bedrooms) else 3)
+        costs = st.slider("Yearly costs & vacancy (% of rent)", 0, 50, 20, key="calc_costs",
+                          help="Maintenance, building fees, vacancy months, agency fees…")
+    with right:
+        est = research.estimate_rent(df, area_in, beds_in)
+        if est is None:
+            st.info("Not enough rental listings to estimate rent.")
+        else:
+            rent, rent_lo, rent_hi, rent_comps = est
+            gross = rent * 12 / price_in * 100
+            net = gross * (1 - costs / 100)
+            m = st.columns(2)
+            m[0].metric("Estimated rent / month", f"${rent:,.0f}", help=f"Typical range ${rent_lo:,.0f}–${rent_hi:,.0f}")
+            m[1].metric("Gross yield", f"{gross:.1f}%")
+            m = st.columns(2)
+            m[0].metric("Net yield", f"{net:.1f}%", help=f"After {costs}% costs & vacancy")
+            m[1].metric("Payback (net)", f"{100 / net:.0f} years" if net > 0 else "—")
+            st.caption(f"Typical rent for similar apartments: ${rent_lo:,.0f}–${rent_hi:,.0f} / month "
+                       f"(middle half of {len(rent_comps)} comparables).".replace("$", "\\$"))
+            with st.expander(f"Rental comparables ({len(rent_comps)})"):
+                st.dataframe(rent_comps[["source", "title", "area_m2", "bedrooms", "monthly_rent", "url"]],
+                             hide_index=True, width="stretch", column_config={
+                    "source": "Source", "title": "Title",
+                    "area_m2": st.column_config.NumberColumn("Area m²", format="%,d"),
+                    "bedrooms": st.column_config.NumberColumn("Beds", format="%d"),
+                    "monthly_rent": st.column_config.NumberColumn("Rent / month", format="dollar", step=1),
+                    "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+                })
+
+    st.subheader("Highest estimated yields (current filters)")
+    best = options[options.gross_yield.notna() & ~options.deal_label.isin(["Check details", "Check price"])]
+    st.dataframe(best.head(20)[["gross_yield", "est_rent_month", "price_usd", "area_m2", "bedrooms", "deal_label",
+                                "title", "source", "url"]], hide_index=True, width="stretch", column_config={
+        "gross_yield": st.column_config.NumberColumn("Gross yield", format="%.1f%%"),
+        "est_rent_month": st.column_config.NumberColumn("Est. rent / month", format="dollar", step=1),
+        "price_usd": st.column_config.NumberColumn("Price", format="dollar", step=1),
+        "area_m2": st.column_config.NumberColumn("Area m²", format="%,d"),
+        "bedrooms": st.column_config.NumberColumn("Beds", format="%d"),
+        "deal_label": "Price vs market", "title": "Title", "source": "Source",
+        "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+    })
 
 # ---------------------------------------------------------------- overview
 
@@ -667,7 +892,9 @@ with tab_compare:
 
 with tab_table:
     cols = ["image_url", "source", "ref", "category", "property_type", "title", "price_usd", "area_m2",
-            "price_per_m2", "bedrooms", "bathrooms", "location", "agent", "agent_phone", "publish_date", "url"]
+            "price_per_m2", "deal_label", "value_gap_pct", "fair_value", "est_rent_month", "gross_yield",
+            "listings_in_group", "group_sources", "bedrooms", "bathrooms", "location", "agent", "agent_phone",
+            "publish_date", "url"]
     st.caption("Tick **✕** on a row to hide that listing (it moves to the 🙈 Hidden tab).")
     table = view[cols].copy()
     table.insert(0, "hide", False)
@@ -686,10 +913,17 @@ with tab_table:
         "price_per_m2": st.column_config.NumberColumn("USD/m²", format="dollar", step=1),
         "publish_date": st.column_config.DateColumn("Published"),
         "url": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+        "deal_label": "Price vs market",
+        "value_gap_pct": st.column_config.NumberColumn("vs market", format="%+.0f%%"),
+        "fair_value": st.column_config.NumberColumn("Est. market value", format="dollar", step=1),
+        "est_rent_month": st.column_config.NumberColumn("Est. rent / month", format="dollar", step=1),
+        "gross_yield": st.column_config.NumberColumn("Gross yield", format="%.1f%%"),
+        "listings_in_group": st.column_config.NumberColumn("Times listed", format="%d"),
+        "group_sources": "Listed on",
     })
     ticked = edited.index[edited.hide]
     if len(ticked):
-        hidden.hide(df_all[df_all.listing_id.isin(view.loc[ticked, "listing_id"])])
+        hidden.hide(df_all[df_all.property_id.isin(view.loc[ticked, "property_id"])])
         st.session_state.table_version = version + 1  # fresh editor: rows below the hidden ones shift up
         st.toast(f"{len(ticked)} listing(s) hidden — see the 🙈 Hidden tab", icon="🙈")
         st.rerun()

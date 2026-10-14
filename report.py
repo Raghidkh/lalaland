@@ -9,6 +9,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 import history
+import research
 
 # Reference categorical palette (fixed order: slot 1 blue, slot 2 orange).
 # Reference categorical palette, fixed order: slot 1 blue, slot 2 orange, slot 3 aqua.
@@ -34,6 +35,18 @@ DATA_COLUMNS = [
     ("price_label", "Price as listed", 16, None),
     ("area_m2", "Area (m²)", 10, "#,##0"),
     ("price_per_m2", "USD / m²", 10, '"$"#,##0'),
+    ("deal_label", "Price vs market", 13, None),
+    ("value_gap_pct", "vs market %", 10, '+0"%";-0"%"'),
+    ("fair_value", "Est. market value", 14, '"$"#,##0'),
+    ("fair_price_m2", "Est. USD / m²", 11, '"$"#,##0'),
+    ("comps_n", "Comparables", 10, "0"),
+    ("fair_confidence", "Confidence", 10, None),
+    ("est_rent_month", "Est. rent / month", 12, '"$"#,##0'),
+    ("gross_yield", "Gross yield %", 10, '0.0"%"'),
+    ("monthly_rent", "Rent / month", 11, '"$"#,##0'),
+    ("listings_in_group", "Times listed", 8, "0"),
+    ("group_sources", "Listed on", 22, None),
+    ("property_id", "Property ID", 16, None),
     ("old_price", "Previous price", 13, '"$"#,##0'),
     ("first_price", "First price seen", 13, '"$"#,##0'),
     ("price_change", "Price change", 13, '"$"#,##0;[Red]-"$"#,##0'),
@@ -218,6 +231,41 @@ def _write_data_sheet(wb, name, frame, top=1):
     return ws
 
 
+def _write_research_sheets(wb, df):
+    """'Deals' = each property vs similar listings; 'Investment' = rents and gross yields."""
+    deals = df[(df.listing_type == "Sale") & df.is_primary & df.value_gap_pct.notna()
+               & ~df.deal_label.isin(["Check details", "Check price"])].sort_values("value_gap_pct")
+    ws = _write_data_sheet(wb, "Deals", deals, top=3)
+    ws["A1"] = "Asking price vs similar listings (each property counted once)"
+    ws["A1"].font = Font(size=14, bold=True, color=INK)
+    ws["A2"] = ("Estimated value = median price per m² of the 15 most similar listings × size. "
+                "Negative 'vs market %' = cheaper than similar listings. Asking prices, not sale prices.")
+    ws["A2"].font = Font(size=10, color=MUTED)
+
+    ws = wb.create_sheet("Investment")
+    ws.sheet_view.showGridLines = False
+    for col in range(1, 12):
+        ws.column_dimensions[get_column_letter(col)].width = 16
+    ws.column_dimensions["B"].width = 60
+    ws["A1"] = "Rental yield — apartments in Adma"
+    ws["A1"].font = Font(size=16, bold=True, color=INK)
+    ws["A2"] = "Rents normalised to per month. Gross yield = 12 × rent ÷ price, before costs, vacancy and taxes."
+    ws["A2"].font = Font(size=10, color=MUTED)
+    money = '"$"#,##0'
+    by_beds = research.yield_by_bedrooms(df)
+    _, last = _write_table(ws, 4, 1, by_beds, {"Median price": money, "Median rent / month": money,
+                                                "Gross yield %": '0.0"%"', "Price-to-rent (years)": "0"},
+                           title="By bedrooms (min. 3 for sale and 3 for rent)")
+    best = df[(df.category == "Apartment") & (df.listing_type == "Sale") & df.is_primary & df.gross_yield.notna()
+              & ~df.deal_label.isin(["Check details", "Check price"])].nlargest(30, "gross_yield")
+    top = pd.DataFrame({"Gross yield %": best.gross_yield, "Title": best.title, "Source": best.source,
+                        "Price": best.price_usd, "Est. rent / month": best.est_rent_month,
+                        "Area (m²)": best.area_m2, "Beds": best.bedrooms, "Link": best.url})
+    _write_table(ws, last + 3, 1, top, {"Gross yield %": '0.0"%"', "Price": money, "Est. rent / month": money,
+                                        "Area (m²)": "#,##0", "Beds": "0"},
+                 title="Highest estimated yields (apartments for sale)")
+
+
 def _write_history_sheets(wb):
     """'Changes' = latest scrape vs the one before; 'History' = every listing ever seen."""
     latest = history.latest_changes()
@@ -400,6 +448,8 @@ def build_workbook(df: pd.DataFrame, path: str, hidden_rows: pd.DataFrame | None
     _write_data_sheet(wb, "Apartments", df[df.category == "Apartment"].sort_values(["listing_type", "price_per_m2"], ascending=[False, True]))
     _write_data_sheet(wb, "All Adma Listings", df.sort_values(["category", "listing_type", "price_usd"]))
     _write_history_sheets(wb)
+    if "value_gap_pct" in df:
+        _write_research_sheets(wb, df)
     if hidden_rows is not None and len(hidden_rows):
         _write_data_sheet(wb, "Hidden", hidden_rows.sort_values("hidden_at", ascending=False))
 
