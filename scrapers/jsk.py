@@ -73,9 +73,11 @@ def _parse_property(session, path, listing_type):
     og = soup.find("meta", property="og:image")
     title = _text(title_el)
 
+    ref = (_text(ref_el) or "").replace("Ref:", "").strip()
     return finalize({
+        "listing_id": f"JSK:{ref}",
         "source": "JSK",
-        "ref": (_text(ref_el) or "").replace("Ref:", "").strip(),
+        "ref": ref,
         "title": title,
         "listing_type": listing_type,
         "category": categorize(ptype, title),

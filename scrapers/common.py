@@ -12,7 +12,7 @@ USER_AGENT = (
 
 # Column order of the final dataset (every scraper returns dicts with these keys).
 COLUMNS = [
-    "source", "ref", "title", "listing_type", "category", "property_type",
+    "listing_id", "source", "ref", "title", "listing_type", "category", "property_type",
     "price_usd", "price_label", "area_m2", "price_per_m2",
     "bedrooms", "bathrooms", "parking",
     "location", "status", "furnished", "payment_type",
@@ -24,7 +24,8 @@ COLUMNS = [
 def make_session() -> requests.Session:
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
-    retry = Retry(total=4, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504))
+    # allowed_methods=None: also retry POST (Confidence and OLX search with POST requests)
+    retry = Retry(total=4, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504), allowed_methods=None)
     s.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
     return s
 

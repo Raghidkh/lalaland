@@ -8,8 +8,12 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+import history
+
 # Reference categorical palette (fixed order: slot 1 blue, slot 2 orange).
-SOURCE_COLORS = {"Confidence": "2A78D6", "JSK": "EB6834"}
+# Reference categorical palette, fixed order: slot 1 blue, slot 2 orange, slot 3 aqua.
+SOURCE_COLORS = {"Confidence": "2A78D6", "JSK": "EB6834", "OLX": "1BAF7A"}
+SOURCES = list(SOURCE_COLORS)
 INK, MUTED, RULE, TILE = "0B0B0B", "52514E", "D9D8D3", "F3F2EF"
 
 SIZE_BANDS = [0, 1000, 1500, 2500, 5000, float("inf")]
@@ -17,6 +21,8 @@ SIZE_LABELS = ["< 1,000 m²", "1,000–1,500 m²", "1,500–2,500 m²", "2,500�
 
 # (column, header, width, number format)
 DATA_COLUMNS = [
+    ("change", "Change", 14, None),
+    ("online_status", "Online?", 10, None),
     ("source", "Source", 11, None),
     ("ref", "Ref", 11, None),
     ("category", "Category", 11, None),
@@ -27,6 +33,14 @@ DATA_COLUMNS = [
     ("price_label", "Price as listed", 16, None),
     ("area_m2", "Area (m²)", 10, "#,##0"),
     ("price_per_m2", "USD / m²", 10, '"$"#,##0'),
+    ("old_price", "Previous price", 13, '"$"#,##0'),
+    ("first_price", "First price seen", 13, '"$"#,##0'),
+    ("price_change", "Price change", 13, '"$"#,##0;[Red]-"$"#,##0'),
+    ("price_change_pct", "Change %", 9, '0.0"%";[Red]-0.0"%"'),
+    ("first_seen", "First seen", 16, "yyyy-mm-dd hh:mm"),
+    ("last_seen", "Last seen", 16, "yyyy-mm-dd hh:mm"),
+    ("days_online", "Days online", 8, "0"),
+    ("times_seen", "Scrapes seen", 8, "0"),
     ("bedrooms", "Beds", 6, "0"),
     ("bathrooms", "Baths", 6, "0"),
     ("parking", "Parking", 8, "0"),
@@ -61,8 +75,7 @@ def summary_by_category(df):
         rows.append({
             "Category": cat,
             "Listings": len(d),
-            "Confidence": int((d.source == "Confidence").sum()),
-            "JSK": int((d.source == "JSK").sum()),
+            **{src: int((d.source == src).sum()) for src in SOURCES},
             "Median price": _median(d.price_usd),
             "Average price": d.price_usd.mean(),
             "Min price": d.price_usd.min(),
@@ -173,16 +186,17 @@ def _kpi(ws, row, col, label, value, fmt):
             ws.cell(r, c).alignment = Alignment(horizontal="left", vertical="center", indent=1)
 
 
-def _write_data_sheet(wb, name, frame):
+def _write_data_sheet(wb, name, frame, top=1):
+    """Write `frame` as a filterable Excel table whose header sits on row `top`."""
     ws = wb.create_sheet(name)
     cols = [c for c in DATA_COLUMNS if c[0] in frame.columns]
     for j, (_, header, width, _) in enumerate(cols, start=1):
-        ws.cell(1, j, header)
+        ws.cell(top, j, header)
         ws.column_dimensions[get_column_letter(j)].width = width
-    for i, rec in enumerate(frame.to_dict("records"), start=2):
+    for i, rec in enumerate(frame.to_dict("records"), start=top + 1):
         for j, (key, _, _, fmt) in enumerate(cols, start=1):
             value = rec.get(key)
-            if isinstance(value, float) and pd.isna(value):
+            if not isinstance(value, (list, dict)) and pd.isna(value):
                 value = None
             if key == "description" and isinstance(value, str):
                 value = value[:32000]  # Excel cell limit
@@ -194,13 +208,32 @@ def _write_data_sheet(wb, name, frame):
                 c.font = Font(color="2A78D6", underline="single")
             if key in ("title", "description"):
                 c.alignment = Alignment(vertical="top", wrap_text=key == "title")
-    last = max(2, len(frame) + 1)
-    ref = f"A1:{get_column_letter(len(cols))}{last}"
+    last = top + max(1, len(frame))
+    ref = f"A{top}:{get_column_letter(len(cols))}{last}"
     table = Table(displayName=name.replace(" ", "_").replace("&", "and").replace("(", "").replace(")", ""), ref=ref)
     table.tableStyleInfo = TableStyleInfo(name="TableStyleLight9", showRowStripes=True)
     ws.add_table(table)
-    ws.freeze_panes = "C2"
+    ws.freeze_panes = f"C{top + 1}"
     return ws
+
+
+def _write_history_sheets(wb):
+    """'Changes' = latest scrape vs the one before; 'History' = every listing ever seen."""
+    latest = history.latest_changes()
+    if latest is None:
+        ws = wb.create_sheet("Changes")
+        ws["A1"] = "History starts with this scrape. Scrape again later to see new, removed and re-priced listings."
+        ws["A1"].font = Font(size=12, color=MUTED)
+        return
+    changes, prev_times, t_new = latest
+    t_old = min(prev_times.values())
+    ws = _write_data_sheet(wb, "Changes", changes, top=3)
+    ws["A1"] = f"Changes since the previous scrape ({t_old:%d %b %Y %H:%M} → {t_new:%d %b %Y %H:%M})"
+    ws["A1"].font = Font(size=14, bold=True, color=INK)
+    counts = changes.change.value_counts()
+    ws["A2"] = " · ".join(f"{k}: {counts.get(k, 0)}" for k in ("New", "Removed", "Price drop", "Price increase"))
+    ws["A2"].font = Font(size=10, color=MUTED)
+    _write_data_sheet(wb, "History", history.listing_history())
 
 
 def _style_series(series, color, marker=False):
@@ -233,7 +266,7 @@ def build_workbook(df: pd.DataFrame, path: str):
 
     ws["A1"] = "Adma Real Estate — Land, Villas & Apartments Market Snapshot"
     ws["A1"].font = Font(size=18, bold=True, color=INK)
-    ws["A2"] = (f"Scraped {datetime.now():%d %b %Y %H:%M} from confidencerealestate.com and jskre.com · "
+    ws["A2"] = (f"Scraped {datetime.now():%d %b %Y %H:%M} from confidencerealestate.com, jskre.com and olx.com.lb · "
                 f"{len(df)} listings in Adma (Keserwan) · prices in USD")
     ws["A2"].font = Font(size=10, color=MUTED)
 
@@ -290,7 +323,7 @@ def build_workbook(df: pd.DataFrame, path: str):
     ch = BarChart()
     ch.type, ch.grouping, ch.overlap = "col", "clustered", -10
     ch.title = "For-sale listings by category"
-    for idx, source in ((3, "Confidence"), (4, "JSK")):
+    for idx, source in enumerate(SOURCES, start=3):
         s = Series(Reference(ws, min_col=idx, min_row=cat_first, max_row=cat_last), title=source)
         _style_series(s, SOURCE_COLORS[source])
         ch.series.append(s)
@@ -346,7 +379,7 @@ def build_workbook(df: pd.DataFrame, path: str):
     helper = wb.create_sheet("_chart_data")
     helper.sheet_state = "hidden"
     r = 1
-    for source in ("Confidence", "JSK"):
+    for source in SOURCES:
         d = land_sorted[(land_sorted.source == source) & (land_sorted.listing_type == "Sale")]
         start = r
         for rec in d.itertuples():
@@ -365,6 +398,7 @@ def build_workbook(df: pd.DataFrame, path: str):
     _write_data_sheet(wb, "Villas", df[df.category == "Villa"].sort_values(["listing_type", "price_usd"], ascending=[False, True]))
     _write_data_sheet(wb, "Apartments", df[df.category == "Apartment"].sort_values(["listing_type", "price_per_m2"], ascending=[False, True]))
     _write_data_sheet(wb, "All Adma Listings", df.sort_values(["category", "listing_type", "price_usd"]))
+    _write_history_sheets(wb)
 
     wb.move_sheet("_chart_data", offset=len(wb.sheetnames))
     wb.save(path)

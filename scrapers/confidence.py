@@ -78,6 +78,7 @@ def scrape(log=print) -> list[dict]:
         ptype = d.get("Type") or s.get("Type")
         title = d.get("Name") or s.get("Name")
         rows.append(finalize({
+            "listing_id": f"Confidence:{s['Id']}",
             "source": "Confidence",
             "ref": (d.get("Reference") or s.get("Reference") or "").strip().lstrip("#"),
             "title": title,
